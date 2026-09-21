@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+
+# 数据与产物：本地生成/可重新训练，不进仓库
+data/
+export/
+runs/
+*.log
+*.pt
+*.onnx

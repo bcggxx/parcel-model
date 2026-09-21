@@ -1,0 +1,149 @@
+name: train-models
+
+# 云端训练流水线：Actions 页面手动触发（Run workflow），参数可改。
+# 公开仓库的 GitHub 标准 runner 免费；每个 job 上限 6 小时，已按此设默认参数。
+on:
+  workflow_dispatch:
+    inputs:
+      n_det:
+        description: "检测集图片数"
+        default: "6000"
+      n_rec:
+        description: "识别集图片数"
+        default: "30000"
+      det_epochs:
+        description: "检测训练轮数（云端建议 <=15）"
+        default: "15"
+      rec_epochs:
+        description: "识别训练轮数（云端建议 <=12）"
+        default: "12"
+      seed:
+        description: "随机种子"
+        default: "20260920"
+
+env:
+  PY: "3.12"
+
+jobs:
+  data:
+    name: 1-生成合成数据
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PY }}
+          cache: pip
+      - name: 安装依赖
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+      - name: 合成检测+识别数据
+        run: python scripts/synth_labels.py --n-det ${{ inputs.n_det }} --n-rec ${{ inputs.n_rec }} --seed ${{ inputs.seed }}
+      - name: 划分 YOLO 数据集
+        run: python scripts/prep_det.py
+      - name: 打包数据集
+        run: tar czf dataset.tgz data/det_yolo data/synth/rec
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dataset
+          path: dataset.tgz
+          retention-days: 7
+
+  train-det:
+    name: 2a-训练检测模型
+    needs: data
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PY }}
+          cache: pip
+      - name: 安装依赖
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          name: dataset
+      - run: tar xzf dataset.tgz
+      - name: 训练并导出 ONNX
+        run: python scripts/train_det.py --epochs ${{ inputs.det_epochs }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: det-model
+          path: export/det_run/weights/best.onnx
+          retention-days: 30
+
+  train-rec:
+    name: 2b-训练识别模型
+    needs: data
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PY }}
+          cache: pip
+      - name: 安装依赖
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          name: dataset
+      - run: tar xzf dataset.tgz
+      - name: 训练并导出 ONNX
+        run: python scripts/train_rec.py --epochs ${{ inputs.rec_epochs }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rec-model
+          path: export/rec_model.onnx
+          retention-days: 30
+
+  release:
+    name: 3-端到端验证并发布 Release
+    needs: [train-det, train-rec]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PY }}
+          cache: pip
+      - name: 安装依赖
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+      - name: 下载两个模型
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "*-model"
+          merge-multiple: true
+      - name: 摆放到约定路径
+        run: |
+          mkdir -p export/det_run/weights
+          mv best.onnx export/det_run/weights/best.onnx
+          mv rec_model.onnx export/rec_model.onnx
+      - name: 生成 400 张端到端验证集（独立种子）
+        run: python scripts/synth_labels.py --n-det 400 --out data/synth_e2e --seed 777
+      - name: 端到端验证
+        run: python scripts/e2e_onnx.py data/synth_e2e | tee e2e_report.txt
+      - name: 发布 Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cp export/det_run/weights/best.onnx parcel_det.onnx
+          cp export/rec_model.onnx parcel_rec.onnx
+          sha256sum parcel_det.onnx parcel_rec.onnx > checksums.txt
+          gh release create "run-${{ github.run_number }}" \
+            --title "OCR models (cloud run ${{ github.run_number }})" \
+            --notes-file e2e_report.txt \
+            parcel_det.onnx parcel_rec.onnx checksums.txt
