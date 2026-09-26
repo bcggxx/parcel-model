@@ -11,7 +11,7 @@ ParcelLens 快递取件码 OCR 模型的训练工程：全合成数据 → YOLO1
 
 - 识别验证集整码准确率 **99.67%**（CER 0.0005）
 - 端到端（400 张整图，det→crop→rec）：精确率 **72.0%**，宽松率 73.25%；det 召回 398/400
-- 模型下载：[bcggxx/backups Release ocr-models-v1](https://github.com/bcggxx/backups/releases/tag/ocr-models-v1)（含 SHA256）
+- 模型下载：[本仓库 Release ocr-models-v1](https://github.com/bcggxx/parcel-model/releases/tag/ocr-models-v1)（含 SHA256）
 - fp32 未量化：合计 <20 MB，2018 年后的 arm64 手机可流畅运行，量化收益小于精度风险
 
 ## 流水线
@@ -49,7 +49,7 @@ python scripts/e2e_onnx.py data/synth_e2e
 2. `train-det` / `train-rec`：并行训练（公开仓库 runner 为 4 vCPU，单 job 上限 6h，默认轮数已留余量）
 3. `release`：自动跑 400 张端到端验证（种子 777，与训练集独立），把两个 ONNX + 校验和 + 验证报告发到本仓库 Release
 
-仓库当前为私有：免费额度 2000 分钟/月，一次完整训练约消耗 600~700 分钟（数据 1~2h + 检测 ≤6h + 识别 ≤5h，检测与识别并行只占墙钟不占双倍额度? 实际按各 job 累计计费，合计约 10~11h），约占月度额度三分之一；若转为公开仓库则不限量。若加大数据量导致单 job 超 6h 上限，优先减少 `det_epochs`（检测收敛快，15 轮足够）。
+仓库为公开仓库：GitHub 标准 runner 对公开仓库免费且不限量，无需关心每月额度；单 job 上限 6 小时，若加大数据量导致超限，优先减少 `det_epochs`（检测收敛快，15 轮足够）。
 
 ## 数据说明
 
